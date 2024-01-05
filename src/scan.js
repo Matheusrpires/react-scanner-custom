@@ -90,6 +90,21 @@ function getInstanceInfo({
   return result;
 }
 
+function getInstanceInfoFromCssInJs({ node, filePath, importInfo, style }) {
+  const result = {
+    ...(importInfo !== undefined && { importInfo }),
+    props: {},
+    styled: style,
+    propsSpread: false,
+    location: {
+      file: filePath,
+      start: node.loc.start,
+    },
+  };
+
+  return result;
+}
+
 function scan({
   code,
   filePath,
@@ -146,10 +161,43 @@ function scan({
         }
       }
     },
-    JSXOpeningElement: {
-      exit(node) {
-        const name = getComponentNameFromAST(node.name);
-        const nameParts = name.split(".");
+    VariableDeclaration(node) {
+      const { declarations } = node;
+      let nodeName = "";
+      let style = "";
+
+      if (declarations?.[0]?.init?.tag?.callee?.object?.arguments?.[0]) {
+        style =
+          declarations[0].init.quasi?.quasis[0]?.value?.raw +
+          declarations[0].init.quasi?.quasis[1]?.value?.raw;
+        nodeName =
+          declarations[0].init.tag?.callee?.object?.arguments?.[0]?.name;
+      }
+      if (declarations?.[0]?.init?.tag?.arguments) {
+        if (declarations[0].init.tag?.arguments?.[0].type === "Identifier") {
+          style =
+            declarations[0].init.quasi?.quasis[0]?.value?.raw +
+            declarations[0].init.quasi?.quasis[1]?.value?.raw;
+          nodeName = declarations[0].init.tag?.arguments?.[0]?.name;
+        }
+        if (
+          declarations[0].init.tag?.arguments?.[0].type === "MemberExpression"
+        ) {
+          if (declarations?.[0]?.init?.tag?.arguments?.[0].object?.name) {
+            style =
+              declarations[0].init.quasi?.quasis[0]?.value?.raw +
+              declarations[0].init.quasi?.quasis[1]?.value?.raw;
+            nodeName =
+              declarations?.[0]?.init?.tag?.arguments?.[0].object?.name.concat(
+                ".",
+                declarations?.[0]?.init?.tag?.arguments?.[0].property?.name
+              );
+          }
+        }
+      }
+
+      if (nodeName) {
+        const nameParts = nodeName.split(".");
         const [firstPart, ...restParts] = nameParts;
         const actualFirstPart = importsMap[firstPart]
           ? getComponentName(importsMap[firstPart])
@@ -180,6 +228,87 @@ function scan({
             }
           }
 
+          if (importedFrom) {
+            if (!importsMap[firstPart]) {
+              return false;
+            }
+
+            const actualImportedFrom = importsMap[firstPart].moduleName;
+
+            if (importedFrom instanceof RegExp) {
+              if (importedFrom.test(actualImportedFrom) === false) {
+                return false;
+              }
+            } else if (actualImportedFrom !== importedFrom) {
+              return false;
+            }
+          }
+
+          return true;
+        };
+
+        if (!shouldReportComponent()) {
+          return astray.SKIP;
+        }
+
+        const componentPath = [actualFirstPart, ...restParts].join(
+          ".components."
+        );
+        let componentInfo = getObjectPath(report, componentPath);
+
+        if (!componentInfo) {
+          componentInfo = {};
+          dset(report, componentPath, componentInfo);
+        }
+
+        if (!componentInfo.instances) {
+          componentInfo.instances = [];
+        }
+
+        const info = getInstanceInfoFromCssInJs({
+          node,
+          filePath,
+          importInfo: importsMap[firstPart],
+          style,
+        });
+
+        componentInfo.instances.push(info);
+      }
+    },
+    JSXOpeningElement: {
+      exit(node) {
+        const name = getComponentNameFromAST(node.name);
+        const nameParts = name.split(".");
+        const [firstPart, ...restParts] = nameParts;
+        const actualFirstPart = importsMap[firstPart]
+          ? getComponentName(importsMap[firstPart])
+          : firstPart;
+
+        const shouldReportComponent = () => {
+          if (components) {
+            if (nameParts.length === 1) {
+              if (components[actualFirstPart] === undefined) {
+                return false;
+              }
+            } else {
+              const actualComponentName = [actualFirstPart, ...restParts].join(
+                "."
+              );
+
+              if (
+                components[actualFirstPart] === undefined &&
+                components[actualComponentName] === undefined
+              ) {
+                return false;
+              }
+            }
+          }
+
+          if (includeSubComponents === false) {
+            if (nameParts.length > 1) {
+              return false;
+            }
+          }
           if (importedFrom) {
             if (!importsMap[firstPart]) {
               return false;
